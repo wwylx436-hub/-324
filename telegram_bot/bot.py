@@ -1,0 +1,304 @@
+"""Telegram-бот с меню расписания колледжа."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+
+BASE_DIR = Path(__file__).resolve().parent
+SCHEDULE_PATH = BASE_DIR / "schedule_data.json"
+OPEN_SCHEDULE = "Открыть расписание"
+WEEKDAY_NAMES = (
+    "Понедельник", "Вторник", "Среда", "Четверг",
+    "Пятница", "Суббота", "Воскресенье",
+)
+WEEKDAY_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+MAIN_MENU = {
+    "keyboard": [[{"text": OPEN_SCHEDULE}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
+
+def load_env(path: Path = BASE_DIR / ".env") -> None:
+    """Загрузить простые пары KEY=VALUE из .env, не перезаписывая окружение."""
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+def load_schedule(path: Path = SCHEDULE_PATH) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Не найден файл расписания {path.name}. Запустите import_schedule.py."
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def monday_of(day: date) -> date:
+    return day - timedelta(days=day.weekday())
+
+
+class TelegramBot:
+    def __init__(self, token: str, schedule_path: Path = SCHEDULE_PATH) -> None:
+        self.api_url = f"https://api.telegram.org/bot{token}"
+        self.data = load_schedule(schedule_path)
+        self.groups = {group["id"]: group for group in self.data["groups"]}
+
+    def request(self, method: str, **params: Any) -> dict[str, Any]:
+        body = urlencode(params).encode("utf-8")
+        request = Request(f"{self.api_url}/{method}", data=body, method="POST")
+        try:
+            with urlopen(request, timeout=40) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            details = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Telegram API вернул HTTP {error.code}: {details}") from error
+        except URLError as error:
+            raise ConnectionError(f"Не удалось подключиться к Telegram: {error.reason}") from error
+        if not payload.get("ok"):
+            raise RuntimeError(payload.get("description", "Неизвестная ошибка Telegram API"))
+        return payload
+
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        params: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            params["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        self.request("sendMessage", **params)
+
+    def answer_callback_query(self, callback_query_id: str) -> None:
+        self.request("answerCallbackQuery", callback_query_id=callback_query_id)
+
+    def run(self) -> None:
+        offset = 0
+        logging.info("Бот запущен. Для остановки нажмите Ctrl+C.")
+        while True:
+            try:
+                payload = self.request(
+                    "getUpdates",
+                    offset=offset,
+                    timeout=30,
+                    allowed_updates=json.dumps(["message", "callback_query"]),
+                )
+                for update in payload["result"]:
+                    offset = update["update_id"] + 1
+                    self.handle_update(update)
+            except (ConnectionError, RuntimeError) as error:
+                logging.warning("%s Повтор через 5 секунд.", error)
+                time.sleep(5)
+
+    def handle_update(self, update: dict[str, Any]) -> None:
+        if "callback_query" in update:
+            self.handle_callback(update["callback_query"])
+            return
+        message = update.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text")
+        if chat_id is None or not isinstance(text, str):
+            return
+        command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+        if command == "/start":
+            first_name = message.get("from", {}).get("first_name", "друг")
+            self.send_message(
+                chat_id,
+                f"Привет, {first_name}! 👋\nНажми кнопку ниже, чтобы посмотреть расписание.",
+                MAIN_MENU,
+            )
+        elif command == "/help":
+            self.send_message(
+                chat_id,
+                "Нажми «Открыть расписание», затем выбери курс, группу и день.",
+                MAIN_MENU,
+            )
+        elif text.casefold() == OPEN_SCHEDULE.casefold():
+            self.show_courses(chat_id)
+        else:
+            self.send_message(
+                chat_id,
+                "Я показываю расписание колледжа. Нажми кнопку ниже 👇",
+                MAIN_MENU,
+            )
+
+    def handle_callback(self, callback: dict[str, Any]) -> None:
+        callback_id = callback.get("id")
+        chat_id = callback.get("message", {}).get("chat", {}).get("id")
+        data = callback.get("data", "")
+        if callback_id:
+            self.answer_callback_query(callback_id)
+        if chat_id is None:
+            return
+        parts = data.split(":")
+        action = parts[0]
+        if action == "course" and len(parts) == 2 and parts[1].isdigit():
+            self.show_groups(chat_id, int(parts[1]))
+        elif action == "group" and len(parts) == 2:
+            self.show_days(chat_id, parts[1])
+        elif action == "day" and len(parts) == 3:
+            self.show_day(chat_id, parts[1], parts[2])
+        elif action == "week" and len(parts) == 3:
+            self.show_week(chat_id, parts[1], parts[2])
+        else:
+            self.send_message(chat_id, "Это меню уже устарело. Открой расписание заново.", MAIN_MENU)
+
+    def show_courses(self, chat_id: int) -> None:
+        courses = sorted({int(group["course"]) for group in self.groups.values()})
+        keyboard = [
+            [{"text": f"{course} курс", "callback_data": f"course:{course}"}]
+            for course in courses
+        ]
+        self.send_message(chat_id, "Выбери курс:", {"inline_keyboard": keyboard})
+
+    def show_groups(self, chat_id: int, course: int) -> None:
+        groups = sorted(
+            (group for group in self.groups.values() if int(group["course"]) == course),
+            key=lambda group: group["name"],
+        )
+        if not groups:
+            self.send_message(chat_id, "Для этого курса группы не найдены.", MAIN_MENU)
+            return
+        buttons = [
+            {"text": group["name"], "callback_data": f"group:{group['id']}"}
+            for group in groups
+        ]
+        keyboard = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+        self.send_message(
+            chat_id,
+            f"{course} курс. Выбери группу:",
+            {"inline_keyboard": keyboard},
+        )
+
+    def closest_schedule_week(self, group_id: str, today: date | None = None) -> date | None:
+        days = self.data.get("schedule", {}).get(group_id, {})
+        if not days:
+            return None
+        today = today or date.today()
+        weeks = sorted({monday_of(date.fromisoformat(day)) for day in days})
+        current_week = monday_of(today)
+        if current_week in weeks:
+            return current_week
+        future = [week for week in weeks if week > current_week]
+        return future[0] if future else weeks[-1]
+
+    def show_days(self, chat_id: int, group_id: str) -> None:
+        group = self.groups.get(group_id)
+        if group is None:
+            self.send_message(chat_id, "Группа не найдена. Открой расписание заново.", MAIN_MENU)
+            return
+        week_start = self.closest_schedule_week(group_id)
+        if week_start is None:
+            self.send_message(chat_id, f"Для группы {group['name']} расписание пока не заполнено.", MAIN_MENU)
+            return
+
+        keyboard = []
+        for offset in range(6):
+            lesson_day = week_start + timedelta(days=offset)
+            keyboard.append([{
+                "text": f"{WEEKDAY_SHORT[offset]}, {lesson_day:%d.%m}",
+                "callback_data": f"day:{group_id}:{lesson_day.isoformat()}",
+            }])
+        keyboard.append([{
+            "text": "Вся неделя",
+            "callback_data": f"week:{group_id}:{week_start.isoformat()}",
+        }])
+        keyboard.append([
+            {"text": "◀️ К группам", "callback_data": f"course:{group['course']}"}
+        ])
+        week_end = week_start + timedelta(days=5)
+        self.send_message(
+            chat_id,
+            f"Группа {group['name']}\nНеделя {week_start:%d.%m}–{week_end:%d.%m.%Y}\nВыбери день:",
+            {"inline_keyboard": keyboard},
+        )
+
+    def format_day(self, group_id: str, lesson_day: date) -> str:
+        group = self.groups[group_id]
+        lessons = self.data.get("schedule", {}).get(group_id, {}).get(lesson_day.isoformat(), [])
+        title = (
+            f"📅 {WEEKDAY_NAMES[lesson_day.weekday()]}, {lesson_day:%d.%m.%Y}\n"
+            f"Группа {group['name']}"
+        )
+        if not lessons:
+            return f"{title}\n\nЗанятий нет."
+        rows = [title]
+        for lesson in lessons:
+            rows.append(f"{lesson['time']}\n{lesson['lesson']}")
+        return "\n\n".join(rows)
+
+    def show_day(self, chat_id: int, group_id: str, iso_day: str) -> None:
+        if group_id not in self.groups:
+            self.send_message(chat_id, "Группа не найдена.", MAIN_MENU)
+            return
+        try:
+            lesson_day = date.fromisoformat(iso_day)
+        except ValueError:
+            self.send_message(chat_id, "Неверная дата.", MAIN_MENU)
+            return
+        group = self.groups[group_id]
+        self.send_message(
+            chat_id,
+            self.format_day(group_id, lesson_day),
+            {"inline_keyboard": [
+                [{"text": "◀️ К дням", "callback_data": f"group:{group_id}"}],
+                [{"text": "◀️ К группам", "callback_data": f"course:{group['course']}"}],
+            ]},
+        )
+
+    def show_week(self, chat_id: int, group_id: str, iso_monday: str) -> None:
+        if group_id not in self.groups:
+            self.send_message(chat_id, "Группа не найдена.", MAIN_MENU)
+            return
+        try:
+            week_start = date.fromisoformat(iso_monday)
+        except ValueError:
+            self.send_message(chat_id, "Неверная дата.", MAIN_MENU)
+            return
+        for offset in range(6):
+            self.send_message(chat_id, self.format_day(group_id, week_start + timedelta(days=offset)))
+        self.send_message(
+            chat_id,
+            "Выбери другой день или группу:",
+            {"inline_keyboard": [
+                [{"text": "◀️ К дням", "callback_data": f"group:{group_id}"}],
+                [{
+                    "text": "◀️ К группам",
+                    "callback_data": f"course:{self.groups[group_id]['course']}",
+                }],
+            ]},
+        )
+
+
+def main() -> None:
+    load_env()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise SystemExit(
+            "Токен не найден. Скопируйте .env.example в .env и вставьте токен от BotFather."
+        )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    TelegramBot(token).run()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nБот остановлен.")
