@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from html.parser import HTMLParser
 from http.cookiejar import CookieJar
 from urllib.parse import urlencode, urljoin, urlparse
@@ -128,6 +129,7 @@ class CabinetClient:
         queue: list[tuple[str, int]] = [(self.dashboard_url, 0)]
         visited: set[str] = set()
         candidates: list[str] = []
+        page_hints: list[str] = []
         while queue and len(visited) < 15:
             url, depth = queue.pop(0)
             if url in visited or not self._same_site(url):
@@ -142,13 +144,23 @@ class CabinetClient:
             if depth >= 2 or content_type not in {"text/html", "application/xhtml+xml"}:
                 continue
             parser = LinkParser()
-            parser.feed(content.decode("utf-8", errors="replace"))
+            html = content.decode("utf-8", errors="replace")
+            parser.feed(html)
+            page_hints.extend(
+                urljoin(final_url, value)
+                for value in re.findall(
+                    r"(?:href|action|data-url|data-href)=[\"']([^\"']+)", html,
+                    flags=re.IGNORECASE,
+                )
+                if value and not value.startswith(("#", "javascript:", "mailto:"))
+            )
             for href, text in parser.links:
                 candidate = urljoin(final_url, href)
                 if self._same_site(candidate) and self._looks_relevant(candidate, text):
                     candidates.append(candidate)
                     queue.append((candidate, depth + 1))
-        sample = ", ".join(dict.fromkeys(candidates[:8])) or "кандидаты не найдены"
+        diagnostic_links = list(dict.fromkeys(candidates + page_hints))
+        sample = ", ".join(diagnostic_links[:20]) or "кандидаты не найдены"
         raise RuntimeError(
             "Не удалось автоматически найти Excel с расписанием после входа. "
             f"Проверенные ссылки: {sample}"
