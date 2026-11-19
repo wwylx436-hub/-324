@@ -1,4 +1,5 @@
 import copy
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +40,9 @@ class FakeBot:
 
 class ScheduleUpdaterTests(unittest.TestCase):
     def setUp(self) -> None:
+        env = patch.dict(os.environ, {'NOTIFY_UNCHANGED_CHECK_ID': 'test-check'})
+        env.start()
+        self.addCleanup(env.stop)
         self.payload = load_schedule()
         self.storage = FakeStorage()
         self.bot = FakeBot(copy.deepcopy(self.payload))
@@ -81,6 +85,14 @@ class ScheduleUpdaterTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(self.bot.reloaded, [updated])
         self.assertEqual(self.bot.broadcasts, [updated["summary"]])
+
+    def test_unchanged_notification_is_sent_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            updater = self.make_updater(Path(temporary), b'unchanged')
+            with patch('schedule_updater.build_schedule', return_value=self.payload):
+                updater.check_once()
+                updater.check_once()
+        self.assertEqual(self.bot.unchanged_checks, 1)
 
 
 if __name__ == "__main__":

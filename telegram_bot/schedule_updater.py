@@ -28,7 +28,7 @@ def sha256(content: bytes) -> str:
 
 def payload_sha256(payload: dict) -> str:
     canonical = json.dumps(
-        payload,
+        {key: payload[key] for key in ('groups', 'schedule')},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -73,9 +73,6 @@ class ScheduleUpdater:
         return None
 
     def _baseline_payload_hash(self) -> str:
-        existing = self.storage.get_state("schedule_payload_sha256")
-        if existing:
-            return existing
         digest = payload_sha256(self.bot.data)
         self.storage.set_state("schedule_payload_sha256", digest)
         return digest
@@ -87,22 +84,23 @@ class ScheduleUpdater:
         current_hash = sha256(workbook)
         if current_hash == previous_hash:
             self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
-            self.bot.broadcast_schedule_unchanged()
+            self.notify_unchanged_once()
             return False
 
         atomic_write(self.workbook_path, workbook)
         payload = build_schedule(self.workbook_path)
         current_payload_hash = payload_sha256(payload)
-        self.storage.set_state("schedule_sha256", current_hash)
         self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
         if current_payload_hash == previous_payload_hash:
-            self.bot.broadcast_schedule_unchanged()
+            self.storage.set_state("schedule_sha256", current_hash)
+            self.notify_unchanged_once()
             logging.info("Файл в кабинете изменился, но расписание выбранных групп осталось прежним.")
             return False
 
         encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         atomic_write(self.schedule_path, encoded)
         self.bot.reload_schedule(payload)
+        self.storage.set_state("schedule_sha256", current_hash)
         self.storage.set_state("schedule_payload_sha256", current_payload_hash)
         self.storage.set_state("last_update_at", datetime.now().isoformat(timespec="seconds"))
 
@@ -115,6 +113,13 @@ class ScheduleUpdater:
             payload.get("summary", {}).get("date_to"),
         )
         return True
+
+    def notify_unchanged_once(self) -> None:
+        request_id = os.getenv('NOTIFY_UNCHANGED_CHECK_ID', '').strip()
+        if request_id and self.storage.get_state('notified_unchanged_check_id') != request_id:
+            self.bot.broadcast_schedule_unchanged()
+            self.storage.set_state('notified_unchanged_check_id', request_id)
+        logging.info('Проверка завершена: расписание выбранных очных групп без изменений.')
 
     def run_forever(self) -> None:
         logging.info("Автопроверка расписания включена: каждые %s мин.", self.interval_seconds // 60)

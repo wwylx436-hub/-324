@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import logging
 from html.parser import HTMLParser
 from http.cookiejar import CookieJar
 from urllib.parse import urlencode, urljoin, urlparse
@@ -126,6 +127,49 @@ class CabinetClient:
         return any(word in value for word in include) and not any(word in value for word in exclude)
 
     def _discover_schedule(self) -> bytes:
+        return self._download_latest_full_time_news()
+
+    @staticmethod
+    def full_time_news(text: str) -> bool:
+        text = ' '.join(text.casefold().split())
+        return ('распис' in text and re.search(r'\bочн\w*', text) is not None
+                and not re.search(r'\bдот\b|заоч|дистанц', text))
+
+    def _download_latest_full_time_news(self) -> bytes:
+        with self.opener.open(self._request(self.dashboard_url), timeout=45) as response:
+            parser = LinkParser()
+            parser.feed(response.read().decode('utf-8', errors='replace'))
+        candidates = {}
+        for href, label in parser.links:
+            url = urljoin(self.dashboard_url, href)
+            if self._same_site(url) and re.fullmatch(r'/news/show/\d+', urlparse(url).path) and self.full_time_news(label):
+                stamp = re.search(r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}', label)
+                if stamp:
+                    candidates[url] = stamp.group(0)
+        if not candidates:
+            raise RuntimeError('В новостях не найдено расписание с подтверждённой очной формой.')
+        latest = max(candidates, key=candidates.get)
+        with self.opener.open(self._request(latest), timeout=45) as response:
+            attachments = LinkParser()
+            attachments.feed(response.read().decode('utf-8', errors='replace'))
+        files = []
+        for href, label in attachments.links:
+            url = urljoin(latest, href)
+            if (self._same_site(url) and '/news/download/' in urlparse(url).path
+                    and '.xlsx' in label.casefold() and 'распис' in label.casefold()
+                    and not re.search(r'\bдот\b|заоч|дистанц', label.casefold())):
+                files.append(url)
+        files = list(dict.fromkeys(files))
+        if len(files) != 1:
+            raise RuntimeError('В свежей очной новости нет единственного подходящего Excel; прежнее расписание сохранено.')
+        with self.opener.open(self._request(files[0]), timeout=60) as response:
+            content = response.read()
+        if not self._is_excel(content):
+            raise RuntimeError('Вложение очного расписания не является Excel.')
+        logging.info('Проверено очное расписание: новость %s, публикация %s.', urlparse(latest).path, candidates[latest])
+        return content
+
+    def _legacy_discover_schedule(self) -> bytes:
         queue: list[tuple[str, int]] = [(self.dashboard_url, 0)]
         visited: set[str] = set()
         candidates: list[str] = []
