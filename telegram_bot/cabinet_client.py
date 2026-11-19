@@ -260,7 +260,13 @@ class CabinetClient:
         with self.opener.open(self._request(self.login_url), timeout=45) as response:
             html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
 
-        action, fields, username_field, password_field = self._find_login_form(html)
+        try:
+            action, fields, username_field, password_field = self._find_login_form(html)
+        except RuntimeError:
+            # После первой успешной проверки кабинет может перенаправить URL
+            # входа сразу в уже авторизованный кабинет. В таком случае форма
+            # пароля отсутствует — это не ошибка, расписание можно читать.
+            return self._discover_schedule()
         fields.update(self.extra_fields)
         fields[username_field] = self.username
         fields[password_field] = self.password
