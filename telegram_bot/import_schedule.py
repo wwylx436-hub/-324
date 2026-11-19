@@ -15,6 +15,7 @@ from openpyxl.utils.datetime import from_excel
 
 
 BASE_DIR = Path(__file__).resolve().parent
+ALLOWED_GROUP_NAMES = frozenset({"П9/25-4", "Э9/25-3"})
 GROUP_RE = re.compile(r"^[^\n]{1,50}/(\d{2})-\d+$")
 TIME_RE = re.compile(
     r"(?P<h1>\d{1,2})[.:](?P<m1>\d{2})\s*[–—-]\s*"
@@ -105,9 +106,20 @@ def build_schedule(source: Path) -> dict[str, Any]:
     if not all_group_names:
         raise ValueError("В книге не найдены названия групп вида …/26-3.")
 
+    missing_groups = ALLOWED_GROUP_NAMES - all_group_names
+    if missing_groups:
+        missing = ", ".join(sorted(missing_groups))
+        raise ValueError(f"В книге не найдены выбранные группы: {missing}.")
+
+    for sheet_name, (header_row, columns) in tuple(sheet_groups.items()):
+        selected_columns = {
+            column: name for column, name in columns.items() if name in ALLOWED_GROUP_NAMES
+        }
+        sheet_groups[sheet_name] = (header_row, selected_columns)
+
     newest_entry_year = max(entry_years)
     sorted_groups = sorted(
-        all_group_names,
+        ALLOWED_GROUP_NAMES,
         key=lambda name: (newest_entry_year - int(GROUP_RE.fullmatch(name).group(1)) + 1, name),
     )
     group_ids = {name: f"g{index:03d}" for index, name in enumerate(sorted_groups, start=1)}
@@ -126,6 +138,8 @@ def build_schedule(source: Path) -> dict[str, Any]:
         if worksheet.title not in sheet_groups:
             continue
         header_row, group_columns = sheet_groups[worksheet.title]
+        if not group_columns:
+            continue
         merged = expanded_values(worksheet)
         current_date: date | None = None
         current_weekday = ""

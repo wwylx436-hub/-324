@@ -53,17 +53,18 @@ class TelegramBotTests(unittest.TestCase):
         self.bot.handle_update(self.update("Открыть расписание"))
         markup = self.bot.sent_messages[0][2]
         self.assertEqual(self.bot.sent_messages[0][1], "Выбери курс:")
-        self.assertEqual(len(markup["inline_keyboard"]), 4)
+        self.assertEqual(markup["inline_keyboard"], [[{"text": "2 курс", "callback_data": "course:2"}]])
 
     def test_course_callback_shows_groups(self) -> None:
-        self.bot.handle_update(self.callback("course:1"))
+        self.bot.handle_update(self.callback("course:2"))
         self.assertEqual(self.bot.answered_callbacks, ["callback-1"])
-        self.assertIn("1 курс", self.bot.sent_messages[0][1])
+        self.assertIn("2 курс", self.bot.sent_messages[0][1])
         buttons = sum(self.bot.sent_messages[0][2]["inline_keyboard"], [])
-        self.assertEqual(len(buttons), 22)
+        self.assertEqual({button["text"] for button in buttons}, {"П9/25-4", "Э9/25-3"})
 
     def test_group_callback_shows_days(self) -> None:
-        self.bot.handle_update(self.callback("group:g001"))
+        group_id = next(iter(self.bot.groups))
+        self.bot.handle_update(self.callback(f"group:{group_id}"))
         self.assertIn("Группа", self.bot.sent_messages[0][1])
         buttons = sum(self.bot.sent_messages[0][2]["inline_keyboard"], [])
         self.assertTrue(any(button["text"] == "Вся неделя" for button in buttons))
