@@ -87,13 +87,13 @@ class ScheduleUpdaterTests(unittest.TestCase):
         self.assertEqual(self.bot.reloaded, [updated])
         self.assertEqual(self.bot.broadcasts, [updated["summary"]])
 
-    def test_unchanged_notification_is_sent_once(self):
+    def test_unchanged_notification_is_sent_after_each_check(self):
         with tempfile.TemporaryDirectory() as temporary:
             updater = self.make_updater(Path(temporary), b'unchanged')
             with patch('schedule_updater.build_schedule', return_value=self.payload):
                 updater.check_once()
                 updater.check_once()
-        self.assertEqual(self.bot.unchanged_checks, 1)
+        self.assertEqual(self.bot.unchanged_checks, 2)
 
     def test_next_check_uses_fixed_moscow_times(self):
         times = parse_check_times("07:00,11:00,15:00")
