@@ -2,11 +2,12 @@ import copy
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from bot import load_schedule
-from schedule_updater import ScheduleUpdater, sha256
+from schedule_updater import ScheduleUpdater, next_check_at, parse_check_times, sha256
 
 
 class FakeStorage:
@@ -93,6 +94,16 @@ class ScheduleUpdaterTests(unittest.TestCase):
                 updater.check_once()
                 updater.check_once()
         self.assertEqual(self.bot.unchanged_checks, 1)
+
+    def test_next_check_uses_fixed_moscow_times(self):
+        times = parse_check_times("07:00,11:00,15:00")
+        now = datetime(2026, 11, 19, 10, 15, tzinfo=timezone(timedelta(hours=3)))
+        self.assertEqual(next_check_at(times, now).strftime("%Y-%m-%d %H:%M"), "2026-11-19 11:00")
+
+    def test_next_check_moves_to_tomorrow_after_last_time(self):
+        times = parse_check_times("07:00,23:00")
+        now = datetime(2026, 11, 19, 23, 1, tzinfo=timezone(timedelta(hours=3)))
+        self.assertEqual(next_check_at(times, now).strftime("%Y-%m-%d %H:%M"), "2026-11-20 07:00")
 
 
 if __name__ == "__main__":

@@ -55,6 +55,17 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
+def admin_chat_ids() -> set[int]:
+    """Прочитать список Telegram ID администраторов из переменной окружения."""
+    result: set[int] = set()
+    for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(","):
+        try:
+            result.add(int(value.strip()))
+        except ValueError:
+            continue
+    return result
+
+
 class TelegramBot:
     def __init__(
         self,
@@ -128,8 +139,12 @@ class TelegramBot:
         text = message.get("text")
         if chat_id is None or not isinstance(text, str):
             return
-        first_name = message.get("from", {}).get("first_name", "")
+        user = message.get("from", {})
+        first_name = user.get("first_name", "")
+        username = user.get("username", "")
+        last_name = user.get("last_name", "")
         command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+        self.storage.subscribe(chat_id, first_name, username, last_name)
         if command == "/stop":
             self.storage.unsubscribe(chat_id)
             self.send_message(
@@ -138,7 +153,6 @@ class TelegramBot:
                 MAIN_MENU,
             )
             return
-        self.storage.subscribe(chat_id, first_name)
         if command == "/start":
             first_name = first_name or "друг"
             self.send_message(
@@ -151,9 +165,19 @@ class TelegramBot:
         elif command == "/help":
             self.send_message(
                 chat_id,
-                "Нажми «Открыть расписание», затем выбери курс, группу и день.",
+                "Нажми «Открыть расписание», затем выбери курс, группу и день.\n"
+                "Команда /stop отключает уведомления.",
                 MAIN_MENU,
             )
+        elif command == "/myid":
+            self.send_message(
+                chat_id,
+                f"Твой Telegram ID: {chat_id}\n"
+                "Передай его администратору, чтобы он выдал доступ к списку пользователей.",
+                MAIN_MENU,
+            )
+        elif command == "/users":
+            self.show_users(chat_id)
         elif text.casefold() == OPEN_SCHEDULE.casefold():
             self.show_courses(chat_id)
         else:
@@ -171,13 +195,20 @@ class TelegramBot:
             self.answer_callback_query(callback_id)
         if chat_id is None:
             return
-        first_name = callback.get("from", {}).get("first_name", "")
-        self.storage.subscribe(chat_id, first_name)
+        user = callback.get("from", {})
+        first_name = user.get("first_name", "")
+        self.storage.subscribe(
+            chat_id,
+            first_name,
+            user.get("username", ""),
+            user.get("last_name", ""),
+        )
         parts = data.split(":")
         action = parts[0]
         if action == "course" and len(parts) == 2 and parts[1].isdigit():
             self.show_groups(chat_id, int(parts[1]))
         elif action == "group" and len(parts) == 2:
+            self.storage.set_selected_group(chat_id, parts[1])
             self.show_days(chat_id, parts[1])
         elif action == "day" and len(parts) == 3:
             self.show_day(chat_id, parts[1], parts[2])
@@ -185,6 +216,39 @@ class TelegramBot:
             self.show_week(chat_id, parts[1], parts[2])
         else:
             self.send_message(chat_id, "Это меню уже устарело. Открой расписание заново.", MAIN_MENU)
+
+    def show_users(self, chat_id: int) -> None:
+        """Показать список активных пользователей только владельцу бота."""
+        if chat_id not in admin_chat_ids():
+            self.send_message(
+                chat_id,
+                "Список пользователей доступен только администратору.\n"
+                "Отправь /myid и добавь этот ID в ADMIN_TELEGRAM_IDS в Railway.",
+                MAIN_MENU,
+            )
+            return
+
+        users = self.storage.list_users(limit=50)
+        active_count = self.storage.subscriber_count()
+        known_count = self.storage.user_count()
+        lines = [f"👥 Пользователи бота: активных {active_count}, всего в базе {known_count}."]
+        if not users:
+            lines.append("\nАктивных пользователей пока нет.")
+        for index, user in enumerate(users, start=1):
+            name = " ".join(filter(None, [str(user["first_name"]), str(user["last_name"])]))
+            display_name = name or "Без имени"
+            username = str(user["username"])
+            username_text = f" (@{username})" if username else ""
+            group_id = user.get("selected_group_id")
+            group = self.groups.get(str(group_id), {}) if group_id else {}
+            group_name = group.get("name", "не выбрана")
+            lines.append(
+                f"\n{index}. {display_name}{username_text}\n"
+                f"ID: {user['chat_id']} · группа: {group_name}"
+            )
+        if active_count > len(users):
+            lines.append("\nПоказаны первые 50 активных пользователей.")
+        self.send_message(chat_id, "\n".join(lines), MAIN_MENU)
 
     def show_courses(self, chat_id: int) -> None:
         courses = sorted({int(group["course"]) for group in self.groups.values()})

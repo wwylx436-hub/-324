@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -20,6 +20,35 @@ if TYPE_CHECKING:
 
 
 BASE_DIR = Path(__file__).resolve().parent
+# Москва использует постоянное время UTC+3, поэтому не зависим от базы часовых
+# поясов операционной системы (она часто отсутствует в Windows Python).
+MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
+DEFAULT_CHECK_TIMES = ("07:00", "11:00", "15:00", "18:00", "21:00", "23:00")
+
+
+def parse_check_times(raw_value: str | None) -> tuple[clock_time, ...]:
+    values = raw_value.split(",") if raw_value else list(DEFAULT_CHECK_TIMES)
+    parsed: list[clock_time] = []
+    for value in values:
+        cleaned = value.strip()
+        try:
+            parsed.append(datetime.strptime(cleaned, "%H:%M").time())
+        except ValueError as error:
+            raise ValueError(
+                f"Некорректное время проверки {cleaned!r}. Используйте формат ЧЧ:ММ."
+            ) from error
+    if not parsed:
+        raise ValueError("Нужно указать хотя бы одно время проверки.")
+    return tuple(sorted(set(parsed)))
+
+
+def next_check_at(check_times: tuple[clock_time, ...], now: datetime | None = None) -> datetime:
+    local_now = (now or datetime.now(MOSCOW_TZ)).astimezone(MOSCOW_TZ)
+    for check_time in check_times:
+        candidate = datetime.combine(local_now.date(), check_time, tzinfo=MOSCOW_TZ)
+        if candidate >= local_now:
+            return candidate
+    return datetime.combine(local_now.date() + timedelta(days=1), check_times[0], tzinfo=MOSCOW_TZ)
 
 
 def sha256(content: bytes) -> str:
@@ -51,11 +80,13 @@ class ScheduleUpdater:
         downloader: Callable[[], bytes],
         interval_minutes: int = 30,
         work_dir: Path | None = None,
+        check_times: tuple[clock_time, ...] | None = None,
     ) -> None:
         self.bot = bot
         self.storage = storage
         self.downloader = downloader
-        self.interval_seconds = max(interval_minutes, 1) * 60
+        # interval_minutes оставлен для совместимости со старыми вызовами.
+        self.check_times = check_times or parse_check_times(None)
         work_dir = work_dir or runtime_dir()
         self.workbook_path = work_dir / "latest_schedule.xlsx"
         self.schedule_path = work_dir / "schedule_data.json"
@@ -122,13 +153,18 @@ class ScheduleUpdater:
         logging.info('Проверка завершена: расписание выбранных очных групп без изменений.')
 
     def run_forever(self) -> None:
-        logging.info("Автопроверка расписания включена: каждые %s мин.", self.interval_seconds // 60)
+        schedule = ", ".join(value.strftime("%H:%M") for value in self.check_times)
+        logging.info("Автопроверка расписания включена по Москве: %s.", schedule)
         while not self._stop.is_set():
+            run_at = next_check_at(self.check_times)
+            delay = max((run_at - datetime.now(MOSCOW_TZ)).total_seconds(), 0)
+            logging.info("Следующая проверка расписания: %s.", run_at.strftime("%d.%m %H:%M МСК"))
+            if self._stop.wait(delay):
+                break
             try:
                 self.check_once()
             except Exception:
                 logging.exception("Не удалось проверить или обновить расписание.")
-            self._stop.wait(self.interval_seconds)
 
     def start(self) -> threading.Thread:
         thread = threading.Thread(target=self.run_forever, name="schedule-updater", daemon=True)
@@ -148,7 +184,12 @@ def start_updater_from_env(bot: "TelegramBot", storage: BotStorage) -> ScheduleU
             "Автопроверка выключена: не заданы переменные %s.", ", ".join(missing)
         )
         return None
-    interval = int(os.getenv("CHECK_INTERVAL_MINUTES", "30"))
-    updater = ScheduleUpdater(bot, storage, CabinetClient().download_schedule, interval)
+    check_times = parse_check_times(os.getenv("CHECK_TIMES_MSK"))
+    updater = ScheduleUpdater(
+        bot,
+        storage,
+        CabinetClient().download_schedule,
+        check_times=check_times,
+    )
     updater.start()
     return updater

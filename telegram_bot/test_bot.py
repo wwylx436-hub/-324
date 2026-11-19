@@ -9,8 +9,15 @@ from bot import MAIN_MENU, TelegramBot
 class FakeStorage:
     def __init__(self) -> None:
         self.active: dict[int, str] = {}
+        self.selected_groups: dict[int, str] = {}
 
-    def subscribe(self, chat_id: int, first_name: str = "") -> None:
+    def subscribe(
+        self,
+        chat_id: int,
+        first_name: str = "",
+        username: str = "",
+        last_name: str = "",
+    ) -> None:
         self.active[chat_id] = first_name
 
     def unsubscribe(self, chat_id: int) -> None:
@@ -18,6 +25,27 @@ class FakeStorage:
 
     def active_chat_ids(self) -> list[int]:
         return sorted(self.active)
+
+    def set_selected_group(self, chat_id: int, group_id: str) -> None:
+        self.selected_groups[chat_id] = group_id
+
+    def subscriber_count(self) -> int:
+        return len(self.active)
+
+    def user_count(self) -> int:
+        return len(self.active)
+
+    def list_users(self, limit: int = 50) -> list[dict[str, object]]:
+        return [
+            {
+                "chat_id": chat_id,
+                "first_name": first_name,
+                "last_name": "",
+                "username": "",
+                "selected_group_id": self.selected_groups.get(chat_id),
+            }
+            for chat_id, first_name in self.active.items()
+        ][:limit]
 
 
 class FakeTelegramBot(TelegramBot):
@@ -71,6 +99,11 @@ class TelegramBotTests(unittest.TestCase):
         self.bot.handle_update(self.update("/stop"))
         self.assertEqual(self.bot.fake_storage.active, {})
         self.assertIn("Уведомления отключены", self.bot.sent_messages[-1][1])
+
+    def test_group_selection_is_saved(self) -> None:
+        group_id = next(iter(self.bot.groups))
+        self.bot.handle_update(self.callback(f"group:{group_id}"))
+        self.assertEqual(self.bot.fake_storage.selected_groups[42], group_id)
 
     def test_broadcast_notifies_all_active_chats(self) -> None:
         self.bot.fake_storage.subscribe(11, "Иван")

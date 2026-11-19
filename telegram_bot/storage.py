@@ -46,6 +46,30 @@ class BotStorage:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS users (
+                    chat_id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL DEFAULT '',
+                    first_name TEXT NOT NULL DEFAULT '',
+                    last_name TEXT NOT NULL DEFAULT '',
+                    selected_group_id TEXT,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_users_active ON users(active);
+                """
+            )
+            # Переносим ранее сохранённых подписчиков после обновления бота.
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO users (
+                    chat_id, first_name, active, created_at, updated_at, last_seen_at
+                )
+                SELECT chat_id, first_name, active, created_at, updated_at, updated_at
+                FROM subscribers
                 """
             )
 
@@ -53,9 +77,32 @@ class BotStorage:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def subscribe(self, chat_id: int, first_name: str = "") -> None:
+    def subscribe(
+        self,
+        chat_id: int,
+        first_name: str = "",
+        username: str = "",
+        last_name: str = "",
+    ) -> None:
         now = self._now()
         with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO users (
+                    chat_id, username, first_name, last_name, active,
+                    created_at, updated_at, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    username = CASE WHEN excluded.username <> '' THEN excluded.username ELSE users.username END,
+                    first_name = CASE WHEN excluded.first_name <> '' THEN excluded.first_name ELSE users.first_name END,
+                    last_name = CASE WHEN excluded.last_name <> '' THEN excluded.last_name ELSE users.last_name END,
+                    active = 1,
+                    updated_at = excluded.updated_at,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (chat_id, username, first_name, last_name, now, now, now),
+            )
             connection.execute(
                 """
                 INSERT INTO subscribers (chat_id, first_name, active, created_at, updated_at)
@@ -70,24 +117,57 @@ class BotStorage:
 
     def unsubscribe(self, chat_id: int) -> None:
         with self._connect() as connection:
+            now = self._now()
             connection.execute(
                 "UPDATE subscribers SET active = 0, updated_at = ? WHERE chat_id = ?",
-                (self._now(), chat_id),
+                (now, chat_id),
+            )
+            connection.execute(
+                "UPDATE users SET active = 0, updated_at = ?, last_seen_at = ? WHERE chat_id = ?",
+                (now, now, chat_id),
             )
 
     def active_chat_ids(self) -> list[int]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT chat_id FROM subscribers WHERE active = 1 ORDER BY chat_id"
+                "SELECT chat_id FROM users WHERE active = 1 ORDER BY chat_id"
             ).fetchall()
         return [int(row["chat_id"]) for row in rows]
 
     def subscriber_count(self) -> int:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT COUNT(*) AS count FROM subscribers WHERE active = 1"
+                "SELECT COUNT(*) AS count FROM users WHERE active = 1"
             ).fetchone()
         return int(row["count"])
+
+    def user_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS count FROM users").fetchone()
+        return int(row["count"])
+
+    def set_selected_group(self, chat_id: int, group_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE users SET selected_group_id = ?, updated_at = ?, last_seen_at = ? WHERE chat_id = ?",
+                (group_id, self._now(), self._now(), chat_id),
+            )
+
+    def list_users(self, limit: int = 50) -> list[dict[str, object]]:
+        """Вернуть активных пользователей, недавно взаимодействовавших с ботом."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT chat_id, username, first_name, last_name, selected_group_id,
+                       created_at, last_seen_at
+                FROM users
+                WHERE active = 1
+                ORDER BY last_seen_at DESC, chat_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_state(self, key: str) -> str | None:
         with self._connect() as connection:
