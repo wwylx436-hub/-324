@@ -350,6 +350,16 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     storage = BotStorage()
     bot = TelegramBot(token, storage=storage)
+    broadcast_id = os.getenv("BROADCAST_ON_START_ID", "").strip()
+    if broadcast_id and storage.get_state("last_broadcast_on_start_id") != broadcast_id:
+        sent, failed = bot.broadcast_schedule_update()
+        storage.set_state("last_broadcast_on_start_id", broadcast_id)
+        logging.info(
+            "Одноразовая рассылка %s завершена: отправлено %s, ошибок %s.",
+            broadcast_id,
+            sent,
+            failed,
+        )
     try:
         from schedule_updater import start_updater_from_env
 
