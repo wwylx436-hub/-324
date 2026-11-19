@@ -24,6 +24,7 @@ class FakeBot:
         self.data = payload
         self.reloaded: list[dict] = []
         self.broadcasts: list[dict] = []
+        self.unchanged_checks = 0
 
     def reload_schedule(self, payload: dict) -> None:
         self.data = payload
@@ -31,6 +32,9 @@ class FakeBot:
 
     def broadcast_schedule_update(self, summary: dict) -> None:
         self.broadcasts.append(summary)
+
+    def broadcast_schedule_unchanged(self) -> None:
+        self.unchanged_checks += 1
 
 
 class ScheduleUpdaterTests(unittest.TestCase):
@@ -57,6 +61,7 @@ class ScheduleUpdaterTests(unittest.TestCase):
 
         self.assertFalse(changed)
         self.assertEqual(self.bot.broadcasts, [])
+        self.assertEqual(self.bot.unchanged_checks, 1)
         self.assertEqual(self.storage.get_state("schedule_sha256"), sha256(workbook))
 
     def test_reloads_and_broadcasts_when_selected_groups_change(self) -> None:

@@ -339,6 +339,27 @@ class TelegramBot:
         logging.info("Рассылка завершена: отправлено %s, ошибок %s.", sent, failed)
         return sent, failed
 
+    def broadcast_schedule_unchanged(self) -> tuple[int, int]:
+        """Сообщить подписчикам, что проверка прошла без изменений."""
+        text = (
+            "ℹ️ Проверка расписания выполнена.\n"
+            "Новое расписание не появилось — всё осталось без изменений."
+        )
+        sent = 0
+        failed = 0
+        for chat_id in self.storage.active_chat_ids():
+            try:
+                self.send_message(chat_id, text, MAIN_MENU)
+                sent += 1
+                time.sleep(0.05)
+            except (ConnectionError, RuntimeError) as error:
+                failed += 1
+                if "HTTP 403" in str(error):
+                    self.storage.unsubscribe(chat_id)
+                logging.warning("Не удалось отправить статус в чат %s: %s", chat_id, error)
+        logging.info("Рассылка без изменений завершена: отправлено %s, ошибок %s.", sent, failed)
+        return sent, failed
+
 
 def main() -> None:
     load_env()

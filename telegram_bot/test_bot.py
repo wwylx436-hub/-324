@@ -80,6 +80,13 @@ class TelegramBotTests(unittest.TestCase):
         self.assertEqual([message[0] for message in self.bot.sent_messages], [11, 22])
         self.assertTrue(all("Расписание изменилось" in message[1] for message in self.bot.sent_messages))
 
+    def test_unchanged_broadcast_notifies_all_active_chats(self) -> None:
+        self.bot.fake_storage.subscribe(11, "Иван")
+        self.bot.fake_storage.subscribe(22, "Оля")
+        sent, failed = self.bot.broadcast_schedule_unchanged()
+        self.assertEqual((sent, failed), (2, 0))
+        self.assertTrue(all("осталось без изменений" in message[1] for message in self.bot.sent_messages))
+
     def test_open_schedule_shows_courses(self) -> None:
         self.bot.handle_update(self.update("Открыть расписание"))
         markup = self.bot.sent_messages[0][2]

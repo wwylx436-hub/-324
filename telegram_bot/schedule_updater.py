@@ -87,6 +87,7 @@ class ScheduleUpdater:
         current_hash = sha256(workbook)
         if current_hash == previous_hash:
             self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
+            self.bot.broadcast_schedule_unchanged()
             return False
 
         atomic_write(self.workbook_path, workbook)
@@ -95,6 +96,7 @@ class ScheduleUpdater:
         self.storage.set_state("schedule_sha256", current_hash)
         self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
         if current_payload_hash == previous_payload_hash:
+            self.bot.broadcast_schedule_unchanged()
             logging.info("Файл в кабинете изменился, но расписание выбранных групп осталось прежним.")
             return False
 
