@@ -13,6 +13,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from storage import BotStorage
+
 
 BASE_DIR = Path(__file__).resolve().parent
 SCHEDULE_PATH = BASE_DIR / "schedule_data.json"
@@ -54,10 +56,21 @@ def monday_of(day: date) -> date:
 
 
 class TelegramBot:
-    def __init__(self, token: str, schedule_path: Path = SCHEDULE_PATH) -> None:
+    def __init__(
+        self,
+        token: str,
+        schedule_path: Path = SCHEDULE_PATH,
+        storage: BotStorage | None = None,
+    ) -> None:
         self.api_url = f"https://api.telegram.org/bot{token}"
         self.data = load_schedule(schedule_path)
         self.groups = {group["id"]: group for group in self.data["groups"]}
+        self.storage = storage or BotStorage()
+
+    def reload_schedule(self, payload: dict[str, Any]) -> None:
+        """Заменить расписание без перезапуска процесса бота."""
+        self.data = payload
+        self.groups = {group["id"]: group for group in payload["groups"]}
 
     def request(self, method: str, **params: Any) -> dict[str, Any]:
         body = urlencode(params).encode("utf-8")
@@ -115,12 +128,24 @@ class TelegramBot:
         text = message.get("text")
         if chat_id is None or not isinstance(text, str):
             return
+        first_name = message.get("from", {}).get("first_name", "")
         command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
-        if command == "/start":
-            first_name = message.get("from", {}).get("first_name", "друг")
+        if command == "/stop":
+            self.storage.unsubscribe(chat_id)
             self.send_message(
                 chat_id,
-                f"Привет, {first_name}! 👋\nНажми кнопку ниже, чтобы посмотреть расписание.",
+                "Уведомления отключены. Чтобы включить их снова, отправь /start.",
+                MAIN_MENU,
+            )
+            return
+        self.storage.subscribe(chat_id, first_name)
+        if command == "/start":
+            first_name = first_name or "друг"
+            self.send_message(
+                chat_id,
+                f"Привет, {first_name}! 👋\n"
+                "Теперь я сообщу, когда расписание изменится.\n"
+                "Нажми кнопку ниже, чтобы посмотреть расписание.",
                 MAIN_MENU,
             )
         elif command == "/help":
@@ -146,6 +171,8 @@ class TelegramBot:
             self.answer_callback_query(callback_id)
         if chat_id is None:
             return
+        first_name = callback.get("from", {}).get("first_name", "")
+        self.storage.subscribe(chat_id, first_name)
         parts = data.split(":")
         action = parts[0]
         if action == "course" and len(parts) == 2 and parts[1].isdigit():
@@ -285,6 +312,33 @@ class TelegramBot:
             ]},
         )
 
+    def broadcast_schedule_update(self, summary: dict[str, Any] | None = None) -> tuple[int, int]:
+        """Уведомить всех активных подписчиков и вернуть (успешно, ошибок)."""
+        summary = summary or self.data.get("summary", {})
+        group_names = ", ".join(sorted(group["name"] for group in self.groups.values()))
+        date_from = summary.get("date_from")
+        date_to = summary.get("date_to")
+        period = f"\nПериод: {date_from} — {date_to}" if date_from and date_to else ""
+        text = (
+            "🔔 Расписание изменилось!\n"
+            f"Обновлены группы: {group_names}.{period}\n\n"
+            "Нажми «Открыть расписание», чтобы посмотреть новую версию."
+        )
+        sent = 0
+        failed = 0
+        for chat_id in self.storage.active_chat_ids():
+            try:
+                self.send_message(chat_id, text, MAIN_MENU)
+                sent += 1
+                time.sleep(0.05)
+            except (ConnectionError, RuntimeError) as error:
+                failed += 1
+                if "HTTP 403" in str(error):
+                    self.storage.unsubscribe(chat_id)
+                logging.warning("Не удалось отправить уведомление в чат %s: %s", chat_id, error)
+        logging.info("Рассылка завершена: отправлено %s, ошибок %s.", sent, failed)
+        return sent, failed
+
 
 def main() -> None:
     load_env()
@@ -294,7 +348,15 @@ def main() -> None:
             "Токен не найден. Скопируйте .env.example в .env и вставьте токен от BotFather."
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-    TelegramBot(token).run()
+    storage = BotStorage()
+    bot = TelegramBot(token, storage=storage)
+    try:
+        from schedule_updater import start_updater_from_env
+
+        start_updater_from_env(bot, storage)
+    except Exception:
+        logging.exception("Не удалось запустить автоматическую проверку расписания.")
+    bot.run()
 
 
 if __name__ == "__main__":
