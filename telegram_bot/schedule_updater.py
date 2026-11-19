@@ -26,6 +26,16 @@ def sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def payload_sha256(payload: dict) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(canonical)
+
+
 def atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -40,13 +50,15 @@ class ScheduleUpdater:
         storage: BotStorage,
         downloader: Callable[[], bytes],
         interval_minutes: int = 30,
+        work_dir: Path | None = None,
     ) -> None:
         self.bot = bot
         self.storage = storage
         self.downloader = downloader
         self.interval_seconds = max(interval_minutes, 1) * 60
-        self.workbook_path = runtime_dir() / "latest_schedule.xlsx"
-        self.schedule_path = runtime_dir() / "schedule_data.json"
+        work_dir = work_dir or runtime_dir()
+        self.workbook_path = work_dir / "latest_schedule.xlsx"
+        self.schedule_path = work_dir / "schedule_data.json"
         self._stop = threading.Event()
 
     def _baseline_hash(self) -> str | None:
@@ -60,8 +72,17 @@ class ScheduleUpdater:
             return digest
         return None
 
+    def _baseline_payload_hash(self) -> str:
+        existing = self.storage.get_state("schedule_payload_sha256")
+        if existing:
+            return existing
+        digest = payload_sha256(self.bot.data)
+        self.storage.set_state("schedule_payload_sha256", digest)
+        return digest
+
     def check_once(self) -> bool:
         previous_hash = self._baseline_hash()
+        previous_payload_hash = self._baseline_payload_hash()
         workbook = self.downloader()
         current_hash = sha256(workbook)
         if current_hash == previous_hash:
@@ -70,13 +91,20 @@ class ScheduleUpdater:
 
         atomic_write(self.workbook_path, workbook)
         payload = build_schedule(self.workbook_path)
+        current_payload_hash = payload_sha256(payload)
+        self.storage.set_state("schedule_sha256", current_hash)
+        self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
+        if current_payload_hash == previous_payload_hash:
+            logging.info("Файл в кабинете изменился, но расписание выбранных групп осталось прежним.")
+            return False
+
         encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         atomic_write(self.schedule_path, encoded)
         self.bot.reload_schedule(payload)
-        self.storage.set_state("schedule_sha256", current_hash)
+        self.storage.set_state("schedule_payload_sha256", current_payload_hash)
         self.storage.set_state("last_update_at", datetime.now().isoformat(timespec="seconds"))
 
-        if previous_hash is not None:
+        if previous_payload_hash:
             self.bot.broadcast_schedule_update(payload.get("summary", {}))
         logging.info(
             "Расписание обновлено: %s групп, даты %s — %s.",
@@ -104,7 +132,6 @@ class ScheduleUpdater:
 def start_updater_from_env(bot: "TelegramBot", storage: BotStorage) -> ScheduleUpdater | None:
     required = (
         "CABINET_LOGIN_URL",
-        "CABINET_SCHEDULE_URL",
         "CABINET_USERNAME",
         "CABINET_PASSWORD",
     )

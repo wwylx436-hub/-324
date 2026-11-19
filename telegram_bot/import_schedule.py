@@ -16,6 +16,7 @@ from openpyxl.utils.datetime import from_excel
 
 BASE_DIR = Path(__file__).resolve().parent
 ALLOWED_GROUP_NAMES = frozenset({"П9/25-4", "Э9/25-3"})
+EXCLUDED_STUDY_FORM_MARKERS = ("заоч", "дот", "дистанц", "очно-заоч")
 GROUP_RE = re.compile(r"^[^\n]{1,50}/(\d{2})-\d+$")
 TIME_RE = re.compile(
     r"(?P<h1>\d{1,2})[.:](?P<m1>\d{2})\s*[–—-]\s*"
@@ -89,6 +90,24 @@ def find_group_columns(worksheet: Any) -> tuple[int, dict[int, str]]:
     return header_row, candidates[header_row]
 
 
+def worksheet_is_full_time(worksheet: Any, header_row: int) -> bool:
+    """Исключить листы ДОТ, заочной и дистанционной формы.
+
+    Если форма в книге не подписана, лист считается очным для совместимости с
+    текущим форматом МИБиУ. Маркеры проверяются только в заголовке листа и над
+    строкой групп, чтобы слово из названия занятия не исключило весь лист.
+    """
+    heading_parts = [clean_text(worksheet.title)]
+    for row in worksheet.iter_rows(
+        min_row=1,
+        max_row=max(header_row, 1),
+        max_col=min(worksheet.max_column, 30),
+    ):
+        heading_parts.extend(clean_text(cell.value) for cell in row if cell.value is not None)
+    heading = " ".join(heading_parts).casefold()
+    return not any(marker in heading for marker in EXCLUDED_STUDY_FORM_MARKERS)
+
+
 def build_schedule(source: Path) -> dict[str, Any]:
     workbook = load_workbook(source, data_only=True, read_only=False)
     sheet_groups: dict[str, tuple[int, dict[int, str]]] = {}
@@ -98,6 +117,8 @@ def build_schedule(source: Path) -> dict[str, Any]:
     for worksheet in workbook.worksheets:
         header_row, columns = find_group_columns(worksheet)
         if not columns:
+            continue
+        if not worksheet_is_full_time(worksheet, header_row):
             continue
         sheet_groups[worksheet.title] = (header_row, columns)
         all_group_names.update(columns.values())

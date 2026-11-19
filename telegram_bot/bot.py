@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from storage import BotStorage
+from storage import BotStorage, runtime_dir
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -349,7 +349,9 @@ def main() -> None:
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     storage = BotStorage()
-    bot = TelegramBot(token, storage=storage)
+    persistent_schedule = runtime_dir() / "schedule_data.json"
+    schedule_path = persistent_schedule if persistent_schedule.exists() else SCHEDULE_PATH
+    bot = TelegramBot(token, schedule_path=schedule_path, storage=storage)
     broadcast_id = os.getenv("BROADCAST_ON_START_ID", "").strip()
     if broadcast_id and storage.get_state("last_broadcast_on_start_id") != broadcast_id:
         sent, failed = bot.broadcast_schedule_update()
