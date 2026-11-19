@@ -32,7 +32,12 @@ class FakeBot:
         self.data = payload
         self.reloaded.append(payload)
 
-    def broadcast_schedule_update(self, summary: dict, next_check: str | None = None) -> None:
+    def broadcast_schedule_update(
+        self,
+        summary: dict,
+        next_check: str | None = None,
+        group_ids: set[str] | None = None,
+    ) -> None:
         self.broadcasts.append(summary)
 
     def broadcast_schedule_unchanged(self, next_check: str | None = None) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -19,13 +20,14 @@ from storage import BotStorage, runtime_dir
 BASE_DIR = Path(__file__).resolve().parent
 SCHEDULE_PATH = BASE_DIR / "schedule_data.json"
 OPEN_SCHEDULE = "Открыть расписание"
+CHECK_SCHEDULE = "Проверить расписание"
 WEEKDAY_NAMES = (
     "Понедельник", "Вторник", "Среда", "Четверг",
     "Пятница", "Суббота", "Воскресенье",
 )
 WEEKDAY_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 MAIN_MENU = {
-    "keyboard": [[{"text": OPEN_SCHEDULE}]],
+    "keyboard": [[{"text": OPEN_SCHEDULE}], [{"text": CHECK_SCHEDULE}]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
@@ -77,6 +79,10 @@ class TelegramBot:
         self.data = load_schedule(schedule_path)
         self.groups = {group["id"]: group for group in self.data["groups"]}
         self.storage = storage or BotStorage()
+        self.schedule_updater: Any | None = None
+
+    def set_schedule_updater(self, updater: Any) -> None:
+        self.schedule_updater = updater
 
     def reload_schedule(self, payload: dict[str, Any]) -> None:
         """Заменить расписание без перезапуска процесса бота."""
@@ -180,12 +186,59 @@ class TelegramBot:
             self.show_users(chat_id)
         elif text.casefold() == OPEN_SCHEDULE.casefold():
             self.show_courses(chat_id)
+        elif text.casefold() == CHECK_SCHEDULE.casefold():
+            self.start_manual_schedule_check(chat_id)
         else:
             self.send_message(
                 chat_id,
                 "Я показываю расписание колледжа. Нажми кнопку ниже 👇",
                 MAIN_MENU,
             )
+
+    def start_manual_schedule_check(self, chat_id: int) -> None:
+        if self.storage.selected_group_id(chat_id) is None:
+            self.send_message(
+                chat_id,
+                "Сначала открой расписание и выбери свою группу, затем нажми «Проверить расписание».",
+                MAIN_MENU,
+            )
+            return
+        if self.schedule_updater is None:
+            self.send_message(chat_id, "Автоматическая проверка сейчас недоступна.", MAIN_MENU)
+            return
+        self.send_message(chat_id, "⏳ Проверяю расписание для твоей группы…", MAIN_MENU)
+        thread = threading.Thread(
+            target=self._run_manual_schedule_check,
+            args=(chat_id,),
+            name=f"manual-schedule-check-{chat_id}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_manual_schedule_check(self, chat_id: int) -> None:
+        try:
+            self.schedule_updater.check_once(requester_chat_id=chat_id)
+        except Exception:
+            logging.exception("Не удалось выполнить ручную проверку расписания.")
+            self.send_message(chat_id, "Не удалось проверить расписание. Попробуй ещё раз позже.", MAIN_MENU)
+
+    def send_manual_check_result(
+        self,
+        chat_id: int,
+        changed: bool,
+        next_check: str | None = None,
+    ) -> None:
+        group_id = self.storage.selected_group_id(chat_id)
+        group_name = self.groups.get(group_id or "", {}).get("name", "выбранной группы")
+        next_check_text = f"\n\nСледующая проверка: {next_check}." if next_check else ""
+        if changed:
+            text = f"🔔 Расписание для группы {group_name} обновилось."
+        else:
+            text = (
+                f"ℹ️ Проверка завершена. Расписание для группы {group_name} "
+                "не обновилось — всё осталось без изменений."
+            )
+        self.send_message(chat_id, f"{text}{next_check_text}", MAIN_MENU)
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = callback.get("id")
@@ -380,10 +433,16 @@ class TelegramBot:
         self,
         summary: dict[str, Any] | None = None,
         next_check: str | None = None,
+        group_ids: set[str] | None = None,
     ) -> tuple[int, int]:
-        """Уведомить всех активных подписчиков и вернуть (успешно, ошибок)."""
+        """Уведомить пользователей только групп с изменившимся расписанием."""
         summary = summary or self.data.get("summary", {})
-        group_names = ", ".join(sorted(group["name"] for group in self.groups.values()))
+        changed_groups = group_ids if group_ids is not None else set(self.groups)
+        group_names = ", ".join(sorted(
+            self.groups[group_id]["name"]
+            for group_id in changed_groups
+            if group_id in self.groups
+        )) or "выбранные"
         date_from = summary.get("date_from")
         date_to = summary.get("date_to")
         period = f"\nПериод: {date_from} — {date_to}" if date_from and date_to else ""
@@ -396,7 +455,12 @@ class TelegramBot:
         )
         sent = 0
         failed = 0
-        for chat_id in self.storage.active_chat_ids():
+        recipients = (
+            self.storage.active_chat_ids()
+            if group_ids is None
+            else self.storage.active_chat_ids_for_groups(changed_groups)
+        )
+        for chat_id in recipients:
             try:
                 self.send_message(chat_id, text, MAIN_MENU)
                 sent += 1
@@ -406,7 +470,7 @@ class TelegramBot:
                 if "HTTP 403" in str(error):
                     self.storage.unsubscribe(chat_id)
                 logging.warning("Не удалось отправить уведомление в чат %s: %s", chat_id, error)
-        logging.info("Рассылка завершена: отправлено %s, ошибок %s.", sent, failed)
+        logging.info("Рассылка обновлений групп %s: отправлено %s, ошибок %s.", group_names, sent, failed)
         return sent, failed
 
     def broadcast_schedule_unchanged(self, next_check: str | None = None) -> tuple[int, int]:
@@ -458,7 +522,9 @@ def main() -> None:
     try:
         from schedule_updater import start_updater_from_env
 
-        start_updater_from_env(bot, storage)
+        updater = start_updater_from_env(bot, storage)
+        if updater is not None:
+            bot.set_schedule_updater(updater)
     except Exception:
         logging.exception("Не удалось запустить автоматическую проверку расписания.")
     bot.run()

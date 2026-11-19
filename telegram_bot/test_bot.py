@@ -26,8 +26,18 @@ class FakeStorage:
     def active_chat_ids(self) -> list[int]:
         return sorted(self.active)
 
+    def active_chat_ids_for_groups(self, group_ids: set[str]) -> list[int]:
+        return sorted(
+            chat_id
+            for chat_id in self.active
+            if self.selected_groups.get(chat_id) in group_ids
+        )
+
     def set_selected_group(self, chat_id: int, group_id: str) -> None:
         self.selected_groups[chat_id] = group_id
+
+    def selected_group_id(self, chat_id: int) -> str | None:
+        return self.selected_groups.get(chat_id)
 
     def subscriber_count(self) -> int:
         return len(self.active)
@@ -105,6 +115,10 @@ class TelegramBotTests(unittest.TestCase):
         self.bot.handle_update(self.callback(f"group:{group_id}"))
         self.assertEqual(self.bot.fake_storage.selected_groups[42], group_id)
 
+    def test_manual_check_requires_selected_group(self) -> None:
+        self.bot.handle_update(self.update("Проверить расписание"))
+        self.assertIn("сначала открой расписание", self.bot.sent_messages[-1][1].casefold())
+
     def test_broadcast_notifies_all_active_chats(self) -> None:
         self.bot.fake_storage.subscribe(11, "Иван")
         self.bot.fake_storage.subscribe(22, "Оля")
@@ -112,6 +126,17 @@ class TelegramBotTests(unittest.TestCase):
         self.assertEqual((sent, failed), (2, 0))
         self.assertEqual([message[0] for message in self.bot.sent_messages], [11, 22])
         self.assertTrue(all("Расписание изменилось" in message[1] for message in self.bot.sent_messages))
+
+    def test_group_update_notifies_only_users_of_changed_group(self) -> None:
+        group_ids = list(self.bot.groups)
+        self.bot.fake_storage.subscribe(11, "Иван")
+        self.bot.fake_storage.subscribe(22, "Оля")
+        self.bot.fake_storage.set_selected_group(11, group_ids[0])
+        self.bot.fake_storage.set_selected_group(22, group_ids[1])
+
+        self.bot.broadcast_schedule_update(group_ids={group_ids[0]})
+
+        self.assertEqual([message[0] for message in self.bot.sent_messages], [11])
 
     def test_unchanged_broadcast_notifies_all_active_chats(self) -> None:
         self.bot.fake_storage.subscribe(11, "Иван")

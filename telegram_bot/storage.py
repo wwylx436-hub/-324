@@ -134,6 +134,21 @@ class BotStorage:
             ).fetchall()
         return [int(row["chat_id"]) for row in rows]
 
+    def active_chat_ids_for_groups(self, group_ids: set[str]) -> list[int]:
+        if not group_ids:
+            return []
+        placeholders = ", ".join("?" for _ in group_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT chat_id FROM users
+                WHERE active = 1 AND selected_group_id IN ({placeholders})
+                ORDER BY chat_id
+                """,
+                tuple(sorted(group_ids)),
+            ).fetchall()
+        return [int(row["chat_id"]) for row in rows]
+
     def subscriber_count(self) -> int:
         with self._connect() as connection:
             row = connection.execute(
@@ -152,6 +167,15 @@ class BotStorage:
                 "UPDATE users SET selected_group_id = ?, updated_at = ?, last_seen_at = ? WHERE chat_id = ?",
                 (group_id, self._now(), self._now(), chat_id),
             )
+
+    def selected_group_id(self, chat_id: int) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT selected_group_id FROM users WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        if row is None or row["selected_group_id"] is None:
+            return None
+        return str(row["selected_group_id"])
 
     def list_users(self, limit: int = 50) -> list[dict[str, object]]:
         """Вернуть активных пользователей, недавно взаимодействовавших с ботом."""

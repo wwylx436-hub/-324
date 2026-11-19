@@ -72,6 +72,17 @@ def atomic_write(path: Path, content: bytes) -> None:
     temporary.replace(path)
 
 
+def changed_group_ids(previous: dict, current: dict) -> set[str]:
+    """Найти группы, у которых реально изменились занятия."""
+    before = previous.get("schedule", {})
+    after = current.get("schedule", {})
+    return {
+        group_id
+        for group_id in set(before) | set(after)
+        if before.get(group_id, {}) != after.get(group_id, {})
+    }
+
+
 class ScheduleUpdater:
     def __init__(
         self,
@@ -91,6 +102,7 @@ class ScheduleUpdater:
         self.workbook_path = work_dir / "latest_schedule.xlsx"
         self.schedule_path = work_dir / "schedule_data.json"
         self._stop = threading.Event()
+        self._check_lock = threading.Lock()
 
     def _baseline_hash(self) -> str | None:
         existing = self.storage.get_state("schedule_sha256")
@@ -108,14 +120,27 @@ class ScheduleUpdater:
         self.storage.set_state("schedule_payload_sha256", digest)
         return digest
 
-    def check_once(self) -> bool:
+    def check_once(self, requester_chat_id: int | None = None) -> bool:
+        if not self._check_lock.acquire(blocking=False):
+            if requester_chat_id is not None:
+                self.bot.send_message(
+                    requester_chat_id,
+                    "Проверка уже выполняется. Подожди немного и попробуй снова.",
+                )
+            return False
+        try:
+            return self._check_once(requester_chat_id)
+        finally:
+            self._check_lock.release()
+
+    def _check_once(self, requester_chat_id: int | None = None) -> bool:
         previous_hash = self._baseline_hash()
         previous_payload_hash = self._baseline_payload_hash()
         workbook = self.downloader()
         current_hash = sha256(workbook)
         if current_hash == previous_hash:
             self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
-            self.notify_unchanged(self.next_check_label())
+            self.notify_unchanged(self.next_check_label(), requester_chat_id)
             return False
 
         atomic_write(self.workbook_path, workbook)
@@ -124,10 +149,11 @@ class ScheduleUpdater:
         self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
         if current_payload_hash == previous_payload_hash:
             self.storage.set_state("schedule_sha256", current_hash)
-            self.notify_unchanged(self.next_check_label())
+            self.notify_unchanged(self.next_check_label(), requester_chat_id)
             logging.info("Файл в кабинете изменился, но расписание выбранных групп осталось прежним.")
             return False
 
+        affected_groups = changed_group_ids(self.bot.data, payload)
         encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         atomic_write(self.schedule_path, encoded)
         self.bot.reload_schedule(payload)
@@ -137,8 +163,18 @@ class ScheduleUpdater:
 
         if previous_payload_hash:
             self.bot.broadcast_schedule_update(
-                payload.get("summary", {}), self.next_check_label()
+                payload.get("summary", {}),
+                self.next_check_label(),
+                group_ids=affected_groups,
             )
+        if requester_chat_id is not None:
+            selected_group_id = self.storage.selected_group_id(requester_chat_id)
+            if selected_group_id not in affected_groups:
+                self.bot.send_manual_check_result(
+                    requester_chat_id,
+                    changed=False,
+                    next_check=self.next_check_label(),
+                )
         logging.info(
             "Расписание обновлено: %s групп, даты %s — %s.",
             payload.get("summary", {}).get("group_count"),
@@ -150,9 +186,12 @@ class ScheduleUpdater:
     def next_check_label(self) -> str:
         return next_check_at(self.check_times).strftime("%d.%m в %H:%M МСК")
 
-    def notify_unchanged(self, next_check: str) -> None:
-        """Сообщить всем подписчикам о завершении каждой проверки."""
-        self.bot.broadcast_schedule_unchanged(next_check)
+    def notify_unchanged(self, next_check: str, requester_chat_id: int | None = None) -> None:
+        """Отправить статус всем при плановой проверке или одному при ручной."""
+        if requester_chat_id is None:
+            self.bot.broadcast_schedule_unchanged(next_check)
+        else:
+            self.bot.send_manual_check_result(requester_chat_id, changed=False, next_check=next_check)
         logging.info('Проверка завершена: расписание выбранных очных групп без изменений.')
 
     def run_forever(self) -> None:
