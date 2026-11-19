@@ -191,8 +191,11 @@ class CabinetClient:
             any((item.get("type") or "").lower() == "password" for item in form["inputs"])
             for form in result_parser.forms
         )
-        if password_form_remains or login_result_url.rstrip("/") == self.login_url.rstrip("/"):
-            raise RuntimeError("Вход в личный кабинет не выполнен. Проверьте логин и пароль.")
+        if password_form_remains:
+            raise RuntimeError(
+                "Вход в личный кабинет не выполнен. "
+                f"Проверьте логин и пароль (ответ: {login_result_url})."
+            )
 
         if not self.schedule_url:
             return self._discover_schedule()
