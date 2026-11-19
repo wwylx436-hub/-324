@@ -115,7 +115,7 @@ class ScheduleUpdater:
         current_hash = sha256(workbook)
         if current_hash == previous_hash:
             self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
-            self.notify_unchanged()
+            self.notify_unchanged(self.next_check_label())
             return False
 
         atomic_write(self.workbook_path, workbook)
@@ -124,7 +124,7 @@ class ScheduleUpdater:
         self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
         if current_payload_hash == previous_payload_hash:
             self.storage.set_state("schedule_sha256", current_hash)
-            self.notify_unchanged()
+            self.notify_unchanged(self.next_check_label())
             logging.info("Файл в кабинете изменился, но расписание выбранных групп осталось прежним.")
             return False
 
@@ -136,7 +136,9 @@ class ScheduleUpdater:
         self.storage.set_state("last_update_at", datetime.now().isoformat(timespec="seconds"))
 
         if previous_payload_hash:
-            self.bot.broadcast_schedule_update(payload.get("summary", {}))
+            self.bot.broadcast_schedule_update(
+                payload.get("summary", {}), self.next_check_label()
+            )
         logging.info(
             "Расписание обновлено: %s групп, даты %s — %s.",
             payload.get("summary", {}).get("group_count"),
@@ -145,9 +147,12 @@ class ScheduleUpdater:
         )
         return True
 
-    def notify_unchanged(self) -> None:
+    def next_check_label(self) -> str:
+        return next_check_at(self.check_times).strftime("%d.%m в %H:%M МСК")
+
+    def notify_unchanged(self, next_check: str) -> None:
         """Сообщить всем подписчикам о завершении каждой проверки."""
-        self.bot.broadcast_schedule_unchanged()
+        self.bot.broadcast_schedule_unchanged(next_check)
         logging.info('Проверка завершена: расписание выбранных очных групп без изменений.')
 
     def run_forever(self) -> None:

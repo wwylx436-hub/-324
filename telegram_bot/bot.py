@@ -376,17 +376,23 @@ class TelegramBot:
             ]},
         )
 
-    def broadcast_schedule_update(self, summary: dict[str, Any] | None = None) -> tuple[int, int]:
+    def broadcast_schedule_update(
+        self,
+        summary: dict[str, Any] | None = None,
+        next_check: str | None = None,
+    ) -> tuple[int, int]:
         """Уведомить всех активных подписчиков и вернуть (успешно, ошибок)."""
         summary = summary or self.data.get("summary", {})
         group_names = ", ".join(sorted(group["name"] for group in self.groups.values()))
         date_from = summary.get("date_from")
         date_to = summary.get("date_to")
         period = f"\nПериод: {date_from} — {date_to}" if date_from and date_to else ""
+        next_check_text = f"\n\nСледующая проверка: {next_check}." if next_check else ""
         text = (
             "🔔 Расписание изменилось!\n"
             f"Обновлены группы: {group_names}.{period}\n\n"
             "Нажми «Открыть расписание», чтобы посмотреть новую версию."
+            f"{next_check_text}"
         )
         sent = 0
         failed = 0
@@ -403,11 +409,13 @@ class TelegramBot:
         logging.info("Рассылка завершена: отправлено %s, ошибок %s.", sent, failed)
         return sent, failed
 
-    def broadcast_schedule_unchanged(self) -> tuple[int, int]:
+    def broadcast_schedule_unchanged(self, next_check: str | None = None) -> tuple[int, int]:
         """Сообщить подписчикам, что проверка прошла без изменений."""
+        next_check_text = f"\n\nСледующая проверка: {next_check}." if next_check else ""
         text = (
             "ℹ️ Проверка расписания выполнена.\n"
             "Новое расписание не появилось — всё осталось без изменений."
+            f"{next_check_text}"
         )
         sent = 0
         failed = 0
