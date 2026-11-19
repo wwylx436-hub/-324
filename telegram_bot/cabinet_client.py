@@ -58,6 +58,37 @@ class LinkParser(HTMLParser):
             self._text = []
 
 
+class VisibleTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._ignored_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style", "svg"}:
+            self._ignored_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "svg"} and self._ignored_depth:
+            self._ignored_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        text = " ".join(data.split())
+        if text and not self._ignored_depth:
+            self.parts.append(text)
+
+
+def login_error_hint(html: str) -> str:
+    parser = VisibleTextParser()
+    parser.feed(html)
+    keywords = ("ошиб", "невер", "парол", "учет", "учёт", "данн", "captcha", "вход")
+    matches: list[str] = []
+    for part in parser.parts:
+        if any(keyword in part.casefold() for keyword in keywords) and part not in matches:
+            matches.append(part)
+    return "; ".join(matches[:5])
+
+
 class CabinetClient:
     """Авторизация и скачивание Excel из кабинета.
 
@@ -192,9 +223,11 @@ class CabinetClient:
             for form in result_parser.forms
         )
         if password_form_remains:
+            hint = login_error_hint(login_result)
+            suffix = f" Сообщение сайта: {hint}" if hint else ""
             raise RuntimeError(
                 "Вход в личный кабинет не выполнен. "
-                f"Проверьте логин и пароль (ответ: {login_result_url})."
+                f"Проверьте логин и пароль (ответ: {login_result_url}).{suffix}"
             )
 
         if not self.schedule_url:
