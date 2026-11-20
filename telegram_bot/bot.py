@@ -520,11 +520,18 @@ def main() -> None:
             failed,
         )
     try:
-        from schedule_updater import start_updater_from_env
+        from schedule_updater import restore_missing_future_schedule, start_updater_from_env
 
         updater = start_updater_from_env(bot, storage)
         if updater is not None:
             bot.set_schedule_updater(updater)
+            restored_groups = restore_missing_future_schedule(bot, persistent_schedule)
+            if restored_groups:
+                bot.broadcast_schedule_update(
+                    bot.data.get("summary", {}),
+                    updater.next_check_label(),
+                    group_ids=restored_groups,
+                )
     except Exception:
         logging.exception("Не удалось запустить автоматическую проверку расписания.")
     bot.run()

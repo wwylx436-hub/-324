@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+from copy import deepcopy
 from datetime import datetime, time as clock_time, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -70,6 +71,54 @@ def atomic_write(path: Path, content: bytes) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_bytes(content)
     temporary.replace(path)
+
+
+def merge_missing_future_dates(
+    incoming: dict,
+    preservation_sources: list[dict],
+    today_iso: str | None = None,
+) -> dict:
+    """Сохранить будущие даты, которых нет в свежей частичной выгрузке."""
+    merged = deepcopy(incoming)
+    merged_schedule = merged.setdefault("schedule", {})
+    today_iso = today_iso or datetime.now(MOSCOW_TZ).date().isoformat()
+    for source in preservation_sources:
+        for group_id, days in source.get("schedule", {}).items():
+            target_days = merged_schedule.setdefault(group_id, {})
+            for iso_day, lessons in days.items():
+                if iso_day >= today_iso and iso_day not in target_days:
+                    target_days[iso_day] = deepcopy(lessons)
+
+    all_days = sorted(
+        iso_day for days in merged_schedule.values() for iso_day in days
+    )
+    summary = merged.setdefault("summary", {})
+    if all_days:
+        summary["date_from"] = all_days[0]
+        summary["date_to"] = all_days[-1]
+    return merged
+
+
+def bundled_schedule() -> dict | None:
+    path = BASE_DIR / "schedule_data.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def restore_missing_future_schedule(bot: "TelegramBot", schedule_path: Path) -> set[str]:
+    """Восстановить будущие дни из встроенной резервной версии после обновления."""
+    fallback = bundled_schedule()
+    if fallback is None:
+        return set()
+    restored = merge_missing_future_dates(bot.data, [fallback])
+    if payload_sha256(restored) == payload_sha256(bot.data):
+        return set()
+    affected = changed_group_ids(bot.data, restored)
+    atomic_write(schedule_path, json.dumps(restored, ensure_ascii=False, indent=2).encode("utf-8"))
+    bot.reload_schedule(restored)
+    logging.info("Восстановлены отсутствующие будущие даты для групп: %s.", ", ".join(sorted(affected)))
+    return affected
 
 
 def changed_group_ids(previous: dict, current: dict) -> set[str]:
@@ -145,6 +194,11 @@ class ScheduleUpdater:
 
         atomic_write(self.workbook_path, workbook)
         payload = build_schedule(self.workbook_path)
+        fallback = bundled_schedule()
+        payload = merge_missing_future_dates(
+            payload,
+            [source for source in (self.bot.data, fallback) if source is not None],
+        )
         current_payload_hash = payload_sha256(payload)
         self.storage.set_state("last_check_at", datetime.now().isoformat(timespec="seconds"))
         if current_payload_hash == previous_payload_hash:

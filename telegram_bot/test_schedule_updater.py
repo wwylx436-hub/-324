@@ -7,7 +7,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bot import load_schedule
-from schedule_updater import ScheduleUpdater, next_check_at, parse_check_times, sha256
+from schedule_updater import (
+    ScheduleUpdater,
+    merge_missing_future_dates,
+    next_check_at,
+    parse_check_times,
+    sha256,
+)
 
 
 class FakeStorage:
@@ -109,6 +115,20 @@ class ScheduleUpdaterTests(unittest.TestCase):
         times = parse_check_times("07:00,23:00")
         now = datetime(2026, 11, 19, 23, 1, tzinfo=timezone(timedelta(hours=3)))
         self.assertEqual(next_check_at(times, now).strftime("%Y-%m-%d %H:%M"), "2026-11-20 07:00")
+
+    def test_preserves_future_days_missing_from_new_workbook(self):
+        incoming = copy.deepcopy(self.payload)
+        old_saturday = incoming["schedule"]["g001"].pop("2026-11-21")
+        incoming["schedule"]["g001"]["2026-11-24"] = [{"lesson": "Новая неделя"}]
+
+        merged = merge_missing_future_dates(
+            incoming,
+            [self.payload],
+            today_iso="2026-11-20",
+        )
+
+        self.assertEqual(merged["schedule"]["g001"]["2026-11-21"], old_saturday)
+        self.assertIn("2026-11-24", merged["schedule"]["g001"])
 
 
 if __name__ == "__main__":
