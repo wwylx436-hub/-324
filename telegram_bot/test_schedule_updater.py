@@ -9,6 +9,7 @@ from unittest.mock import patch
 from bot import load_schedule
 from schedule_updater import (
     ScheduleUpdater,
+    filter_schedule_from,
     merge_missing_future_dates,
     next_check_at,
     parse_check_times,
@@ -129,6 +130,17 @@ class ScheduleUpdaterTests(unittest.TestCase):
 
         self.assertEqual(merged["schedule"]["g001"]["2026-11-21"], old_saturday)
         self.assertIn("2026-11-24", merged["schedule"]["g001"])
+
+    def test_hides_days_before_configured_first_visible_date(self):
+        payload = copy.deepcopy(self.payload)
+        payload["schedule"]["g001"]["2026-11-24"] = [{"lesson": "Новая неделя"}]
+
+        filtered = filter_schedule_from(payload, "2026-11-21")
+
+        self.assertNotIn("2026-11-20", filtered["schedule"]["g001"])
+        self.assertIn("2026-11-21", filtered["schedule"]["g001"])
+        self.assertIn("2026-11-24", filtered["schedule"]["g001"])
+        self.assertEqual(filtered["summary"]["date_from"], "2026-11-21")
 
 
 if __name__ == "__main__":
