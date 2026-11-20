@@ -160,10 +160,16 @@ class TelegramBotTests(unittest.TestCase):
 
     def test_group_callback_shows_days(self) -> None:
         group_id = next(iter(self.bot.groups))
+        saturday = self.bot.data["schedule"][group_id]["2026-11-21"]
+        self.bot.data["schedule"][group_id] = {
+            "2026-11-21": saturday,
+            "2026-11-24": [{"time": "09:00", "lesson": "Следующая неделя"}],
+        }
         self.bot.handle_update(self.callback(f"group:{group_id}"))
         self.assertIn("Группа", self.bot.sent_messages[0][1])
         buttons = sum(self.bot.sent_messages[0][2]["inline_keyboard"], [])
-        self.assertTrue(any(button["text"] == "Вся неделя" for button in buttons))
+        day_buttons = [button for button in buttons if button["callback_data"].startswith("day:")]
+        self.assertEqual([button["text"] for button in day_buttons], ["Сб, 21.11", "Вт, 24.11"])
 
     def test_day_format_uses_real_schedule(self) -> None:
         group_id = next(iter(self.bot.data["schedule"]))

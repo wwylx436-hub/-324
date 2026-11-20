@@ -342,34 +342,38 @@ class TelegramBot:
         future = [week for week in weeks if week > current_week]
         return future[0] if future else weeks[-1]
 
+    def available_schedule_days(self, group_id: str) -> list[date]:
+        """Вернуть только дни, которые реально есть в загруженном расписании."""
+        return sorted(
+            date.fromisoformat(iso_day)
+            for iso_day in self.data.get("schedule", {}).get(group_id, {})
+        )
+
     def show_days(self, chat_id: int, group_id: str) -> None:
         group = self.groups.get(group_id)
         if group is None:
             self.send_message(chat_id, "Группа не найдена. Открой расписание заново.", MAIN_MENU)
             return
-        week_start = self.closest_schedule_week(group_id)
-        if week_start is None:
+        available_days = self.available_schedule_days(group_id)
+        if not available_days:
             self.send_message(chat_id, f"Для группы {group['name']} расписание пока не заполнено.", MAIN_MENU)
             return
 
         keyboard = []
-        for offset in range(6):
-            lesson_day = week_start + timedelta(days=offset)
+        for lesson_day in available_days:
             keyboard.append([{
-                "text": f"{WEEKDAY_SHORT[offset]}, {lesson_day:%d.%m}",
+                "text": f"{WEEKDAY_SHORT[lesson_day.weekday()]}, {lesson_day:%d.%m}",
                 "callback_data": f"day:{group_id}:{lesson_day.isoformat()}",
             }])
-        keyboard.append([{
-            "text": "Вся неделя",
-            "callback_data": f"week:{group_id}:{week_start.isoformat()}",
-        }])
         keyboard.append([
             {"text": "◀️ К группам", "callback_data": f"course:{group['course']}"}
         ])
-        week_end = week_start + timedelta(days=5)
+        first_day, last_day = available_days[0], available_days[-1]
         self.send_message(
             chat_id,
-            f"Группа {group['name']}\nНеделя {week_start:%d.%m}–{week_end:%d.%m.%Y}\nВыбери день:",
+            f"Группа {group['name']}\n"
+            f"Доступные даты: {first_day:%d.%m}–{last_day:%d.%m.%Y}\n"
+            "Выбери день:",
             {"inline_keyboard": keyboard},
         )
 
@@ -415,8 +419,16 @@ class TelegramBot:
         except ValueError:
             self.send_message(chat_id, "Неверная дата.", MAIN_MENU)
             return
-        for offset in range(6):
-            self.send_message(chat_id, self.format_day(group_id, week_start + timedelta(days=offset)))
+        available_days = [
+            lesson_day
+            for lesson_day in self.available_schedule_days(group_id)
+            if week_start <= lesson_day <= week_start + timedelta(days=5)
+        ]
+        if not available_days:
+            self.send_message(chat_id, "За эту неделю занятий в расписании нет.", MAIN_MENU)
+            return
+        for lesson_day in available_days:
+            self.send_message(chat_id, self.format_day(group_id, lesson_day))
         self.send_message(
             chat_id,
             "Выбери другой день или группу:",
