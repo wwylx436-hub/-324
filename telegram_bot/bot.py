@@ -508,12 +508,12 @@ class TelegramBot:
         logging.info("Рассылка без изменений завершена: отправлено %s, ошибок %s.", sent, failed)
         return sent, failed
 
-    def broadcast_check_time_change(self) -> tuple[int, int]:
+    def broadcast_check_time_change(self, check_times: str) -> tuple[int, int]:
         """Оповестить участников об изменении времени автопроверок."""
+        display_times = ", ".join(part.strip() for part in check_times.split(",") if part.strip())
         text = (
             "ℹ️ Время автоматической проверки расписания изменено.\n"
-            "Проверки в 07:00, 18:00 и 23:00 отключены.\n"
-            "Теперь бот проверяет расписание в 11:00, 15:00 и 21:00 по Москве."
+            f"Теперь бот проверяет расписание в {display_times} по Москве."
         )
         sent = 0
         failed = 0
@@ -558,7 +558,9 @@ def main() -> None:
         check_times_notice_id
         and storage.get_state("last_check_times_notice_id") != check_times_notice_id
     ):
-        sent, failed = bot.broadcast_check_time_change()
+        sent, failed = bot.broadcast_check_time_change(
+            os.getenv("CHECK_TIMES_MSK", "11:00,15:00,21:00")
+        )
         storage.set_state("last_check_times_notice_id", check_times_notice_id)
         logging.info(
             "Уведомление об изменении времени проверок %s: отправлено %s, ошибок %s.",

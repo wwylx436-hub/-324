@@ -149,10 +149,10 @@ class TelegramBotTests(unittest.TestCase):
         self.bot.fake_storage.subscribe(11, "Иван")
         self.bot.fake_storage.subscribe(22, "Оля")
 
-        sent, failed = self.bot.broadcast_check_time_change()
+        sent, failed = self.bot.broadcast_check_time_change("09:00,15:00,21:00")
 
         self.assertEqual((sent, failed), (2, 0))
-        self.assertTrue(all("07:00, 18:00 и 23:00" in message[1] for message in self.bot.sent_messages))
+        self.assertTrue(all("09:00, 15:00, 21:00" in message[1] for message in self.bot.sent_messages))
 
     def test_open_schedule_shows_courses(self) -> None:
         self.bot.handle_update(self.update("Открыть расписание"))
