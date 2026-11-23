@@ -508,6 +508,28 @@ class TelegramBot:
         logging.info("Рассылка без изменений завершена: отправлено %s, ошибок %s.", sent, failed)
         return sent, failed
 
+    def broadcast_check_time_change(self) -> tuple[int, int]:
+        """Оповестить участников об изменении времени автопроверок."""
+        text = (
+            "ℹ️ Время автоматической проверки расписания изменено.\n"
+            "Проверки в 07:00, 18:00 и 23:00 отключены.\n"
+            "Теперь бот проверяет расписание в 11:00, 15:00 и 21:00 по Москве."
+        )
+        sent = 0
+        failed = 0
+        for chat_id in self.storage.active_chat_ids():
+            try:
+                self.send_message(chat_id, text, MAIN_MENU)
+                sent += 1
+                time.sleep(0.05)
+            except (ConnectionError, RuntimeError) as error:
+                failed += 1
+                if "HTTP 403" in str(error):
+                    self.storage.unsubscribe(chat_id)
+                logging.warning("Не удалось отправить уведомление в чат %s: %s", chat_id, error)
+        logging.info("Рассылка об изменении времени проверок: отправлено %s, ошибок %s.", sent, failed)
+        return sent, failed
+
 
 def main() -> None:
     load_env()
@@ -528,6 +550,19 @@ def main() -> None:
         logging.info(
             "Одноразовая рассылка %s завершена: отправлено %s, ошибок %s.",
             broadcast_id,
+            sent,
+            failed,
+        )
+    check_times_notice_id = os.getenv("CHECK_TIMES_NOTICE_ID", "").strip()
+    if (
+        check_times_notice_id
+        and storage.get_state("last_check_times_notice_id") != check_times_notice_id
+    ):
+        sent, failed = bot.broadcast_check_time_change()
+        storage.set_state("last_check_times_notice_id", check_times_notice_id)
+        logging.info(
+            "Уведомление об изменении времени проверок %s: отправлено %s, ошибок %s.",
+            check_times_notice_id,
             sent,
             failed,
         )
