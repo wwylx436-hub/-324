@@ -100,6 +100,8 @@ class TelegramBot:
             raise RuntimeError(f"Telegram API вернул HTTP {error.code}: {details}") from error
         except URLError as error:
             raise ConnectionError(f"Не удалось подключиться к Telegram: {error.reason}") from error
+        except (TimeoutError, OSError) as error:
+            raise ConnectionError(f"Ошибка соединения с Telegram: {error}") from error
         if not payload.get("ok"):
             raise RuntimeError(payload.get("description", "Неизвестная ошибка Telegram API"))
         return payload
@@ -133,8 +135,8 @@ class TelegramBot:
                     offset = update["update_id"] + 1
                     self.handle_update(update)
             except (ConnectionError, RuntimeError) as error:
-                logging.warning("%s Повтор через 5 секунд.", error)
-                time.sleep(5)
+                logging.warning("%s Повтор через 1 секунду.", error)
+                time.sleep(1)
 
     def handle_update(self, update: dict[str, Any]) -> None:
         if "callback_query" in update:
